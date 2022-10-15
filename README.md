@@ -1,6 +1,6 @@
 # AuthLink
 
-Locked links.
+Locked links: Safe through AES, genuine through RSA-PSS.
 
 Try it out:
 
