@@ -16,6 +16,7 @@ Dedication along with this software. If not, see
                 color: #FFF;
                 font-size: 12pt;
                 display: flex;
+                font-family: monospace;
             }
             body {
                 margin: 0;
@@ -153,6 +154,15 @@ Dedication along with this software. If not, see
             
             }
             
+            // Pipe helper
+            async function PassThrough(transform, chunk)
+            {
+                const writer = transform.writable.getWriter();
+                writer.write(chunk).finally(() => writer.releaseLock());
+                const reader = transform.readable.getReader();
+                return await reader.read().then(_ => _.value).finally(() => reader.releaseLock());
+            }
+
             //
             // Chunker
             //
@@ -551,33 +561,76 @@ Dedication along with this software. If not, see
                         }
             
                         const verifyKey = await window.crypto.subtle.exportKey("spki", signer.verifyKey);
-                        const salt = Buffers.Random(64);
-            
+                       
+                        let salt = null;
+
+                        if (params.salt !== undefined) 
+                        {
+                            salt = Buffers.From64(params.salt);
+                        }
+                        else
+                        {
+                            salt = Buffers.Random(64);
+                        }
+                        
                         const id = await signer.Sign(salt);
-            
+                        
                         const hashAuth = `#key=${Buffers.To64(verifyKey)}`;
-                        let hashData = `#salt=${Buffers.To64(salt)}#id=${Buffers.To64(id)}#type=`;
+                        let hashData = `#salt=${Buffers.To64(salt)}#id=${Buffers.To64(id)}`;
                         let extraHTML = "";
-            
+
+                        if (params.create == "url")
+                        {
+                            hashData += "#url";
+                        }
+                        
+                        const signKey = await window.crypto.subtle.exportKey("pkcs8", signer.signKey);
+                        const creatorKeys = `#sign=${Buffers.To64(signKey)}:${Buffers.To64(verifyKey)}`;
+
                         const encryptor = await CryptoStream_AES_CTR.FromDerived(false, verifyKey, salt);
-            
+                        
+                        const href = window.location.href.split("#", 1)[0];
+
                         if (params.url !== undefined) {
                             const response = await fetch(params.data);
-                            hashData += response.headers.get("content-type").replace(" ", "");
+                            const mimetype = response.headers.get("content-type").replace(" ", "");
+                            hashData += "#type=" + mimetype;
             
                             const blob = await BlobSink.From(response.body.pipeThrough(new Chunker(1024*64)).pipeThrough(encryptor));
             
-                            extraHTML += `<br/><a href=${URL.createObjectURL(blob)}>File</a>`;
+                            const obfustcateHash = `#create=url#type=${mimetype}${creatorKeys}#salt=${Buffers.To64(salt)}##salt=${Buffers.To64(salt)}##`
+
+                            extraHTML += `
+                                <p>
+                                    <a href="${URL.createObjectURL(blob)}">File</a>
+                                    <br/>To host at thrid party<br/>
+                                    <a href="${href}${obfustcateHash}">Link&nbsp;creator</a>:&nbsp;${obfustcateHash}
+                                    <br/>To obfuscate the third party link
+                                </p>
+                            `;
                         }
                         else {
-                            hashData += params.type ?? "raw";
+                            hashData += "#type=" + (params.type ?? "raw");
                             hashData += "##";
                             hashData += Buffers.To64(await PassThrough(encryptor, Buffers.FromString(decodeURI(params.data))));
                         }
             
-                        const href = window.location.href.split("#", 1)[0];
             
-                        return `<a href=${href}${hashAuth}>Auth</a>: ${hashAuth}</br><a href=${href}${hashData}>Data</a>: ${hashData}<br/><span>Key: ${Buffers.To64(verifyKey)}</span>${extraHTML}`;
+                        return `
+                        <p>
+                            <a href="${href}${hashAuth}">Private&nbsp;link</a>:&nbsp;${hashAuth}
+                            <br/>Share&nbsp;mindfully
+                        </p>
+                        <p>
+                            <a href="${href}${hashData}">Public&nbsp;link&nbsp;</a>:&nbsp;${hashData}
+                            <br/>Share&nbsp;publicly
+                        </p>
+                        <p>
+                            <a href="${creatorKeys}">Creation&nbsp;key</a>:&nbsp;${creatorKeys}
+                            <br/>Don't&nbsp;share
+                        </p>
+                        ${extraHTML}
+                        `;
                     }
                     catch (e) {
                         console.error(e);
@@ -608,13 +661,15 @@ Dedication along with this software. If not, see
             
                                 let blob = null;
                                 
+                                console.log(params);
                                 if (params.url !== undefined) {
                                     document.body.innerHTML = "Fetching...";
             
-                                    if (false/* obfuscated */) {
-                                        params = Object.assign(params, await PassThrough(decryptor, Buffers.From64(params.data)));
+                                    //if (false/* obfuscated */) {
+                                        const obfuscatedData = await PassThrough(decryptor, Buffers.From64(params.data));
+                                        params = Object.assign(params, parseHash(Buffers.ToString(obfuscatedData)));
                                         decryptor = await CryptoStream_AES_CTR.FromDerived(true, key, Buffers.From64(params.salt));
-                                    }
+                                    //}
             
                                     const response = await fetch(params.data);
                                     blob = await BlobSink.From(response.body.pipeThrough(new Chunker(1024*64)).pipeThrough(decryptor), params.type ?? "text/plain");
